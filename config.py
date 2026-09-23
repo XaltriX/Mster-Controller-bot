@@ -10,7 +10,7 @@ DB_NAME = os.getenv("DB_NAME", "tgbroadcast")
 
 # Your Heroku app's public https URL, e.g. https://yourapp.herokuapp.com
 # (no trailing slash)
-APP_URL = os.getenv("APP_URL", "").rstrip("/")
+APP_URL = os.getenv("APP_URL", "https://mastr-contro-bto-4eaeb499b257.herokuapp.com/").rstrip("/")
 
 # Random secret path segment for the main bot's webhook so nobody else can hit it
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "xk29fj83mZ")
