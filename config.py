@@ -17,7 +17,7 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "xk29fj83mZ")
 
 # Hard cap on how many worker bots this instance will accept.
 # Bump this up as you monitor RAM/CPU with /capacity.
-MAX_BOTS_LIMIT = int(os.getenv("MAX_BOTS_LIMIT", "400"))
+MAX_BOTS_LIMIT = int(os.getenv("MAX_BOTS_LIMIT", "40000"))
 
 # Delay (seconds) between messages while broadcasting, per bot,
 # to stay under Telegram's per-bot flood limits.
