@@ -36,5 +36,9 @@ async def set_webhook(token: str) -> bool:
 
 
 async def send_message(token: str, chat_id: int, text: str) -> bool:
-    data = await call(token, "sendMessage", {"chat_id": chat_id, "text": text})
+    data = await call(token, "sendMessage", {
+        "chat_id": chat_id,
+        "text": text,
+        "link_preview_options": {"is_disabled": True},
+    })
     return bool(data.get("ok"))
