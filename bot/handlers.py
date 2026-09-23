@@ -115,12 +115,19 @@ async def bulk_import(message: Message):
         return await message.answer("❌ Couldn't find any bot tokens in that file.")
 
     status = await message.answer(f"🔍 Found {len(tokens)} token(s). Connecting...")
+    # Fire-and-forget: Heroku's router kills any single HTTP request after ~30s,
+    # so a slow multi-token import must NOT run inside the webhook's request/response
+    # cycle. We ack Telegram immediately above and keep working in the background.
+    asyncio.create_task(_process_bulk_import(tokens, message.from_user.id, status))
+
+
+async def _process_bulk_import(tokens: list[str], owner_id: int, status: Message):
     connected_n = already_n = invalid_n = 0
 
     for token in tokens:
         if await repo.count_bots("connected") >= config.MAX_BOTS_LIMIT:
             break
-        result = await connect_bot(token, message.from_user.id)
+        result = await connect_bot(token, owner_id)
         if result.startswith("✅"):
             connected_n += 1
         elif result.startswith("⚠️"):
@@ -129,9 +136,12 @@ async def bulk_import(message: Message):
             invalid_n += 1
         await asyncio.sleep(0.5)  # stay well under Telegram's rate limits
 
-    await status.edit_text(
-        f"Done.\n✅ Connected: {connected_n}\n⚠️ Already connected: {already_n}\n❌ Invalid: {invalid_n}"
-    )
+    try:
+        await status.edit_text(
+            f"Done.\n✅ Connected: {connected_n}\n⚠️ Already connected: {already_n}\n❌ Invalid: {invalid_n}"
+        )
+    except Exception:
+        pass  # message may have been deleted etc. - not worth crashing over
 
 
 # ---------------- Edit the global reply text ----------------
@@ -185,16 +195,27 @@ async def confirm_broadcast(message: Message, state: FSMContext):
     data = await state.get_data()
     await state.clear()
     status = await message.answer("📢 Broadcasting... 0% done.")
+    # Background task again - with many bots/users this can easily run past the
+    # 30s window Heroku allows for a single request/response cycle.
+    asyncio.create_task(_run_broadcast_bg(data["text"], status))
 
+
+async def _run_broadcast_bg(text: str, status: Message):
     async def progress(done_bots, total_bots, sent, failed):
         pct = int(done_bots / total_bots * 100) if total_bots else 100
-        await status.edit_text(f"📢 Broadcasting... {pct}% done. Sent: {sent}, failed: {failed}.")
+        try:
+            await status.edit_text(f"📢 Broadcasting... {pct}% done. Sent: {sent}, failed: {failed}.")
+        except Exception:
+            pass
 
-    result = await run_broadcast(data["text"], progress_cb=progress)
-    await status.edit_text(
-        f"✅ Broadcast finished.\nBots used: {result['bots']}\n"
-        f"Delivered: {result['sent']}\nFailed: {result['failed']}"
-    )
+    result = await run_broadcast(text, progress_cb=progress)
+    try:
+        await status.edit_text(
+            f"✅ Broadcast finished.\nBots used: {result['bots']}\n"
+            f"Delivered: {result['sent']}\nFailed: {result['failed']}"
+        )
+    except Exception:
+        pass
 
 
 # ---------------- Capacity (owner only) ----------------
