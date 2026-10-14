@@ -7,7 +7,7 @@ from datetime import datetime
 
 import psutil
 from aiogram import Router, F
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -69,6 +69,7 @@ async def cmd_help(message: Message):
     await message.answer(
         "Owner commands:\n"
         "/dashboard - bots, users, top bots\n"
+        "/listbot - all bots (connected + disconnected) with @username and users\n"
         "/bots - CSV of every bot (users, messages, status)\n"
         "/checkbots - find revoked/deleted tokens now\n"
         "/setreply - change the reply text of all bots\n"
@@ -333,4 +334,32 @@ async def cmd_bots(message: Message):
     await message.answer_document(
         BufferedInputFile(buf.getvalue().encode("utf-8-sig"), filename="bots_report.csv"),
         caption=f"{len(rows)} bots, sorted by users.",
+    )
+
+
+@router.message(Command("listbot"), OWNER)
+async def cmd_listbot(message: Message, command: CommandObject):
+    """All bots with @username + users. `/listbot connected` or `/listbot disconnected` to filter."""
+    arg = (command.args or "").strip().lower()
+    bots, per_bot = await asyncio.gather(repo.get_all_bots(), repo.users_per_bot())
+
+    def users(b):
+        return per_bot.get(b["token"], {"active": 0})["active"]
+
+    sections, caption = [], []
+    for status, icon in (("connected", "🟢"), ("disconnected", "🔴")):
+        if arg in ("connected", "disconnected") and arg != status:
+            continue
+        group = sorted((b for b in bots if b.get("status") == status), key=users, reverse=True)
+        total = sum(users(b) for b in group)
+        lines = [f"{status.upper()} BOTS: {len(group)}  |  TOTAL USERS: {total}", "-" * 44]
+        for i, b in enumerate(group, 1):
+            why = f"  ({b['disconnect_reason']})" if status == "disconnected" and b.get("disconnect_reason") else ""
+            lines.append(f"{i}. @{b.get('username') or '?'} — {users(b)} users{why}")
+        sections.append("\n".join(lines))
+        caption.append(f"{icon} {status.capitalize()}: {len(group)} bots · {total} users")
+
+    await message.answer_document(
+        BufferedInputFile("\n\n".join(sections).encode("utf-8"), filename="listbot.txt"),
+        caption="\n".join(caption),
     )
