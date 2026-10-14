@@ -1,4 +1,5 @@
 import logging
+import os
 from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
@@ -6,6 +7,8 @@ from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_applicati
 import config
 from database.mongo import ensure_indexes
 from bot.handlers import router
+from utils.tasks import spawn
+from worker import broadcaster, healthcheck
 from worker.webhook_handler import handle_worker_webhook
 from worker.api import close_session
 
@@ -16,12 +19,15 @@ dp = Dispatcher()
 dp.include_router(router)
 
 MAIN_WEBHOOK_PATH = f"/main_webhook/{config.WEBHOOK_SECRET}"
+HEALTHCHECK_HOURS = float(os.getenv("HEALTHCHECK_HOURS", "6"))
 
 
 async def on_startup(app: web.Application):
     await ensure_indexes()
     if config.APP_URL:
         await bot.set_webhook(f"{config.APP_URL}{MAIN_WEBHOOK_PATH}")
+    spawn(broadcaster.resume_if_needed(bot))          # continue a broadcast cut off by a restart
+    spawn(healthcheck.loop(HEALTHCHECK_HOURS))        # detect revoked tokens + purge old stats
     logging.info("Startup complete.")
 
 

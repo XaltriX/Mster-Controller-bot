@@ -1,59 +1,46 @@
 # Multi-Bot Auto-Reply + Broadcast Platform
 
-Users connect their own bot token to your main bot. Every connected bot then
-auto-replies with one shared, editable message to anything sent to it
-(`/start` or any text). You (owner) can broadcast to every user of every
-connected bot, sequentially and flood-safe. No per-bot client objects are
-kept in memory — everything runs through raw Bot API calls over one shared
-`aiohttp` session, driven by webhooks, so RAM usage doesn't scale with bot
-count.
+Users connect their own bot token to the main bot. Every connected bot auto-replies
+with one shared, editable message. The owner can broadcast to every user of every
+connected bot. Everything runs on webhooks + raw Bot API calls (no per-bot client in
+RAM), so it fits one Heroku web dyno.
 
 ## Commands
 
-**Anyone**
-- `/start`, `/addbot` — connect a bot (send its token)
-- send a `.txt`/`.json` file — bulk-connects every token found in it
-  (works even if the file has usernames/bot names mixed in on the same lines)
-- `/setreply` — change the shared reply text (applies to every bot instantly)
+**Anyone**: `/start`, `/addbot`, or send a `.txt/.json` file with tokens (bulk connect)
 
 **Owner only**
-- `/broadcast` → send text → `/confirm` — message every user of every connected bot
-- `/capacity` — live RAM/CPU + bot counts vs your configured limit
-- `/dashboard` — connected/disconnected counts + top 5 bots by messages (24h)
+| Command | What it does |
+|---|---|
+| `/dashboard` | connected/disconnected bots, total + unique users, blocked users, 24h messages, top 5 by messages and by users |
+| `/bots` | CSV of every bot: users, blocked users, messages 24h, status |
+| `/checkbots` | getMe on every bot now; revoked/deleted tokens are marked disconnected |
+| `/setreply` | change the reply text of all bots |
+| `/broadcast` -> text -> `/confirm` | message every user of every connected bot |
+| `/stopbroadcast` | stop a running broadcast |
+| `/lastreport` | bot-wise CSV (delivered / blocked / failed) of the last broadcast |
+| `/capacity` | RAM / CPU / bot limit |
+| `/cancel` | leave any pending step |
 
-## Setup
+## Config vars (Heroku)
 
-1. `pip install -r requirements.txt`
-2. Set environment variables (Heroku Config Vars or local `.env`):
+Required: `BOT_TOKEN`, `OWNER_ID`, `MONGO_URI`, `APP_URL`, `WEBHOOK_SECRET`
 
-| Variable | Required | Description |
-|---|---|---|
-| `BOT_TOKEN` | ✅ | Your main controller bot's token |
-| `OWNER_ID` | ✅ | Your numeric Telegram user ID |
-| `MONGO_URI` | ✅ | MongoDB connection string (Atlas free tier works) |
-| `APP_URL` | ✅ | Your Heroku app URL, e.g. `https://yourapp.herokuapp.com` (no trailing slash) |
-| `WEBHOOK_SECRET` | ✅ | Any random string, keeps your main bot's webhook path private |
-| `MAX_BOTS_LIMIT` | ❌ | Default 400 — hard cap on connected bots |
-| `BROADCAST_DELAY` | ❌ | Default 0.05s — delay between broadcast sends |
+Optional: `MAX_BOTS_LIMIT` (400), `BROADCAST_DELAY` (0.05s between messages of one bot),
+`BROADCAST_CONCURRENCY` (8 bots sending at once), `HEALTHCHECK_HOURS` (6)
 
-3. Deploy on Heroku as a **web** dyno (not worker — this app is HTTP-driven):
-   ```
-   git push heroku main
-   ```
-   The `Procfile` already has `web: python run.py`.
+## How the broadcast stays reliable
 
-## Why webhooks, not polling
+- Progress is stored in MongoDB per bot (cursor = last user reached). If the dyno
+  restarts, the broadcast resumes automatically from where it stopped.
+- 8 bots send in parallel, each bot sends to its users one by one (Telegram limits are per bot).
+- 429 "retry after" is waited out; network blips are retried.
+- Users who blocked a bot are marked and skipped from then on.
+- A revoked token found mid-broadcast disconnects that bot immediately.
+- One crashing bot never stops the others; `/lastreport` shows exactly what happened per bot.
 
-With 1000+ connected bots, keeping a persistent client per bot would need
-50–150MB of RAM each. Instead, every worker bot's webhook points at
-`APP_URL/webhook/<token>` on this same app. Incoming messages are handled,
-replied to, and forgotten — RAM tracks message *traffic*, not bot *count*.
-Check `/capacity` regularly; when RAM stays above ~70-80%, that's your signal
-to raise `MAX_BOTS_LIMIT` cautiously or move to a bigger dyno.
+## Revoked tokens
 
-## Notes
-
-- A bot is auto-marked **disconnected** if a send fails and `getMe` also
-  fails (token revoked/deleted from BotFather).
-- The dashboard's "top bots" stat comes from a `messages` collection logged
-  on every incoming update — cheap to query, accurate per time window.
+A revoked bot never sends an update, so it can only be found by asking Telegram. A background
+check runs every `HEALTHCHECK_HOURS` (and at startup), or run `/checkbots` any time.
+Old message-stat rows (> 7 days) are deleted automatically to keep MongoDB small.
