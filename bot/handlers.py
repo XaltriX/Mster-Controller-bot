@@ -16,7 +16,7 @@ from aiogram.types import (
 
 import config
 from database import repo
-from utils.token_extractor import extract_tokens
+from utils.token_extractor import TOKEN_PATTERN, extract_tokens
 from utils.tasks import spawn
 from worker import api, broadcaster, healthcheck
 
@@ -33,6 +33,10 @@ class AddBot(StatesGroup):
 
 class SetReply(StatesGroup):
     waiting_text = State()
+
+
+class Whois(StatesGroup):
+    waiting_file = State()
 
 
 class Broadcast(StatesGroup):
@@ -70,8 +74,11 @@ async def cmd_help(message: Message):
         "Owner commands:\n"
         "/dashboard - bots, users, top bots\n"
         "/listbot - all bots (connected + disconnected) with @username and users\n"
+        "/whois - send your token .txt: which line = which bot (tokens never shown)\n"
         "/bots - CSV of every bot (users, messages, status)\n"
         "/checkbots - find revoked/deleted tokens now\n"
+        "/fixwebhooks - re-point every bot's webhook at the current APP_URL "
+        "(run this after the Heroku app URL changes)\n"
         "/setreply - change the reply text of all bots\n"
         "/broadcast - message every user of every bot\n"
         "/stopbroadcast - stop a running broadcast\n"
@@ -122,6 +129,54 @@ async def connect_bot(token: str, owner_id: int) -> str:
 
     await repo.add_bot(token, owner_id, me.get("username", ""), me.get("first_name", ""))
     return f"✅ Connected @{me.get('username')}! It'll now auto-reply to anyone who messages it."
+
+
+# ---------------- /whois: which line of my token file is which bot (owner only) ----------------
+
+@router.message(Command("whois"), OWNER)
+async def cmd_whois(message: Message, state: FSMContext):
+    await state.set_state(Whois.waiting_file)
+    await message.answer(
+        "Send your token .txt file. I'll tell you which line of it belongs to which bot. "
+        "Tokens are never shown back, only line number + bot ID.\n(/cancel to abort)"
+    )
+
+
+@router.message(Whois.waiting_file, F.document, OWNER)
+async def whois_file(message: Message, state: FSMContext):
+    await state.clear()
+    file = await message.bot.get_file(message.document.file_id)
+    raw = await message.bot.download_file(file.file_path)
+    text = raw.read().decode("utf-8", errors="ignore")
+
+    found = []  # (line number, token)
+    for n, line in enumerate(text.splitlines(), 1):
+        for tok in dict.fromkeys(TOKEN_PATTERN.findall(line)):
+            found.append((n, tok))
+    if not found:
+        return await message.answer("❌ No bot tokens found in that file.")
+
+    bots, per_bot = await asyncio.gather(
+        repo.get_bots_by_tokens([t for _, t in found]), repo.users_per_bot())
+    rows, known = [], 0
+    for n, tok in found:
+        b = bots.get(tok)
+        if b:
+            known += 1
+            rows.append([n, tok.split(":")[0], f"@{b.get('username', '')}", b.get("status", ""),
+                         per_bot.get(tok, {"active": 0})["active"]])
+        else:
+            rows.append([n, tok.split(":")[0], "(not in database)", "", ""])
+    rows.sort(key=lambda r: (r[2].startswith("("), r[2].lower()))
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["file_line", "bot_id", "bot", "status", "users"])
+    w.writerows(rows)
+    await message.answer_document(
+        BufferedInputFile(buf.getvalue().encode("utf-8-sig"), filename="whois_report.csv"),
+        caption=f"{len(found)} tokens in file · {known} are connected bots · {len(found) - known} not in database.\n"
+                "Search the bot's @username in the CSV, then open that file_line in your txt.",
+    )
 
 
 # ---------------- Bulk import via file ----------------
@@ -264,6 +319,30 @@ async def _checkbots_bg(status: Message):
         pass
 
 
+@router.message(Command("fixwebhooks"), OWNER)
+async def cmd_fixwebhooks(message: Message):
+    if healthcheck.is_running():
+        return await message.answer("A check/resync is already running, wait for it to finish.")
+    status = await message.answer(
+        f"🔧 Re-pointing every connected bot's webhook at:\n{config.APP_URL}\n\nThis can take a few minutes for a lot of bots."
+    )
+    spawn(_fixwebhooks_bg(status))
+
+
+async def _fixwebhooks_bg(status: Message):
+    res = await healthcheck.resync_webhooks()
+    try:
+        await status.edit_text(
+            "✅ Webhook resync finished.\n"
+            f"Checked: {res['checked']}\n"
+            f"🟢 Fixed/OK: {res['ok']}\n"
+            f"🔴 Revoked/deleted (now marked disconnected): {res['revoked']}\n"
+            f"⚠️ Failed (temporary, left as connected - try again later): {res['failed']}"
+        )
+    except Exception:
+        pass
+
+
 # ---------------- Capacity & dashboard (owner only) ----------------
 
 @router.message(Command("capacity"), OWNER)
@@ -355,7 +434,7 @@ async def cmd_listbot(message: Message, command: CommandObject):
         lines = [f"{status.upper()} BOTS: {len(group)}  |  TOTAL USERS: {total}", "-" * 44]
         for i, b in enumerate(group, 1):
             why = f"  ({b['disconnect_reason']})" if status == "disconnected" and b.get("disconnect_reason") else ""
-            lines.append(f"{i}. @{b.get('username') or '?'} — {users(b)} users{why}")
+            lines.append(f"{i}. @{b.get('username') or '?'} — {users(b)} users — id {b['token'].split(':')[0]}{why}")
         sections.append("\n".join(lines))
         caption.append(f"{icon} {status.capitalize()}: {len(group)} bots · {total} users")
 
