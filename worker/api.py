@@ -43,6 +43,28 @@ async def call(token: str, method: str, payload: dict | None = None) -> dict:
         return {"ok": False, "error_code": 0, "description": f"network: {type(e).__name__}"}
 
 
+async def call_upload(token: str, method: str, field: str, filename: str,
+                      file_bytes: bytes, fields: dict) -> dict:
+    """Like call(), but multipart - for the one-time upload of a photo/video/
+    document/animation. Every value after the first successful send is a
+    file_id instead, sent as plain JSON through call()."""
+    url = config.TELEGRAM_API.format(token=token, method=method)
+    try:
+        session = await get_session()
+        form = aiohttp.FormData()
+        for k, v in fields.items():
+            if v is not None:
+                form.add_field(k, str(v))
+        form.add_field(field, file_bytes, filename=filename)
+        async with session.post(url, data=form) as resp:
+            try:
+                return await resp.json(content_type=None)
+            except Exception:
+                return {"ok": False, "error_code": resp.status, "description": "bad response"}
+    except Exception as e:
+        return {"ok": False, "error_code": 0, "description": f"network: {type(e).__name__}"}
+
+
 def classify(data: dict) -> tuple[str, int]:
     """-> (status, retry_after_seconds)"""
     if data.get("ok"):
@@ -71,9 +93,17 @@ async def get_me(token: str) -> dict | None:
 
 
 async def set_webhook(token: str) -> bool:
+    status, _ = await set_webhook_status(token)
+    return status == OK
+
+
+async def set_webhook_status(token: str) -> tuple[str, str]:
+    """-> (OK|REVOKED|ERROR, description). Used by /fixwebhooks to tell a dead
+    token apart from a merely-failed webhook call."""
     url = f"{config.APP_URL}/webhook/{token}"
     data = await call(token, "setWebhook", {"url": url})
-    return bool(data.get("ok"))
+    status, _ = classify(data)
+    return status, data.get("description", "")
 
 
 async def send_message(token: str, chat_id: int, text: str,
