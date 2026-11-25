@@ -2,7 +2,7 @@ import os
 
 # Main controller bot (the one you talk to as owner/users)
 BOT_TOKEN = os.getenv("BOT_TOKEN","8911158533:AAHToVLJlmh5NT6ZVELxqwF1gzblSS3LpOA")
-OWNER_ID = int(os.getenv("OWNER_ID", "5706788169"))
+OWNER_ID = int(os.getenv("OWNER_ID", "9290575752"))
 
 # MongoDB
 MONGO_URI = os.getenv("MONGO_URI","mongodb+srv://sahilkhokhar4520_db_user:wdbCPrF6OCmDmWP9@cluster0.5tclbp8.mongodb.net/?appName=Cluster0")
